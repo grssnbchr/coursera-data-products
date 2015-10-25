@@ -1,0 +1,145 @@
+---
+title: "Coursera Developing Data Products"
+subtitle: "Course Project"
+author: "Timo Grossenbacher"
+date: "October 25, 2015"
+output: html_document
+runtime: shiny
+---
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+# load necessary packages
+if(!require(dplyr)) {
+  install.packages("dplyr", repos="http://cran.us.r-project.org")
+  require(dplyr)
+}
+if(!require(tidyr)) {
+  install.packages("tidyr", repos="http://cran.us.r-project.org")
+  require(tidyr)
+}
+if(!require(ggplot2)) {
+  install.packages("ggplot2", repos="http://cran.us.r-project.org")
+  require(ggplot2)
+}
+if(!require(magrittr)) {
+  install.packages("magrittr", repos="http://cran.us.r-project.org")
+  require(magrittr)
+}
+if(!require(readxl)) {
+  devtools::install_github("hadley/readxl")
+  require(readxl)
+}
+if(!require(shinyapps)) {
+  devtools::install_github("rstudio/shinyapps")
+  require(shinyapps)
+}
+if(!require(BH)) {
+  install.packages("BH", repos="http://cran.us.r-project.org")
+  require(BH)
+}
+if(!require(lazyeval)) {
+  install.packages("lazyeval", repos="http://cran.us.r-project.org")
+  require(lazyeval)
+}
+
+if(!require(RColorBrewer)) {
+  install.packages("RColorBrewer", repos="http://cran.us.r-project.org")
+  require(RColorBrewer)
+}
+
+```
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE, results = 'hide'}
+# this subsetting with bugfix in readxl
+parties <- read_excel("input/parteienstaerke_mod_2.xlsx", sheet = 4)[1:24,] # same here
+# all years 
+years <- seq(1971, 2011, 4)
+length(years) # we have 11 different time stamps
+# read in input file (xlsx) - need to load a slightly modified input file as the original xlsx makes it really complicated
+prepareYearlyData <- function(subsetDf, year){
+  # add columns for numbers which are not contained in subsetDf
+  subsetDf[,as.character(setdiff(parties$ID_BFS, as.numeric(names(subsetDf))))] <- NA
+  # replace numerical column names with party names from parties
+  partyNames <- paste(left_join(data.frame(ID_BFS = as.numeric(names(subsetDf))), parties, by = "ID_BFS")$Abbr_D, year, sep = "_")
+  names(subsetDf) <- partyNames
+  return(subsetDf)
+}
+prepareYearlyDataForVis <- function(subsetDf, year){
+  # add columns for numbers which are not contained in subsetDf
+  subsetDf[,as.character(setdiff(parties$ID_BFS, as.numeric(names(subsetDf))))] <- NA
+  # replace numerical column names with party names from parties
+  partyNames <- paste(as.numeric(names(subsetDf)), year, sep = "_")
+  names(subsetDf) <- partyNames
+  return(subsetDf)
+}
+raw_data_districts <- read_excel("input/parteienstaerke_mod_2.xlsx", sheet = 3, skip = 10, col_names = T)[1:147,] # replace this subsetting with bugfix in readxl
+# doublecheck that "1" is contained as many times as we have years
+table(names(raw_data_districts) == "1")[2] == length(years)
+# this is true, so we can split the columns by this column name
+indices <- which(names(raw_data_districts) == "1")
+yearlyDataframes <- list()
+for(i in 1:length(indices)){
+  start <- indices[i]
+  stop <- if(is.na(indices[i + 1])) ncol(raw_data_districts) else indices[i + 1] - 1 
+  yearlyDataframes[[i]] <- prepareYearlyData(raw_data_districts[,start:stop], years[i])
+}
+# combine
+filled_data_districts <- cbind(raw_data_districts[, 1:indices[1] - 1], yearlyDataframes)
+# doublecheck: column numbers should be 2 + 11 * 24
+dim(filled_data_districts)[2] == 2 + 11 * 24
+# gather into long form
+long_data_districts <- filled_data_districts %>%
+  gather(ParteiJahr, Staerke,-c(BFSNr, BezName))
+# doublecheck: number of rows should be 147 * 11 * 24
+dim(long_data_districts)[1] == 147 * 11 * 24
+# add new columns Jahr and Partei from splitted ParteiJahr
+long_data_districts %<>% separate(col = ParteiJahr, into = c("Partei","Jahr")) %>%
+  mutate(Jahr = as.Date(Jahr, "%Y")) %>%
+  tbl_df()
+
+# ontological choice: make NAs to 0es
+long_data_districts[is.na(long_data_districts)] <- 0
+```
+
+
+# Swiss Party Strength Per District
+
+The following application shows the party strengths for all major Swiss parties between 1971 and 2011 in all Swiss districts.
+
+Federal elections happen all four years, thus for example in 1971 or 1975, etc. 
+
+You have the possibility to chose 
+
+ * a district -> only results for the selected district will be shown
+ * a time range -> only results for the elections in the selected time range will be shown
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+distinct_colors <- c("#89C5DA", "#DA5724", "#74D944", "#CE50CA", "#3F4921", "#C0717C", "#CBD588", "#5F7FC7", 
+"#673770", "#D3D93E", "#38333E", "#508578", "#D7C1B1", "#689030", "#AD6F3B", "#CD9BCD", 
+"#D14285", "#6DDE88", "#652926", "#7FDCC0", "#C84248", "#8569D5", "#5E738F", "#D1A33D")
+
+inputPanel(
+  selectInput("district", label = "District", choices = unique(long_data_districts$BezName), selected = "Bezirk Solothurn"),
+  sliderInput("yearrange", "Time range:",
+                min = 1971, max = 2011, value = c(1971,2011), step = 4, sep = "")
+)
+
+renderPlot({
+print(input$yearrange)
+  startyear = as.Date(as.character(input$yearrange[1]), format = "%Y", origin = "1971-01-01")
+  endyear = as.Date(as.character(input$yearrange[2]), format = "%Y", origin = "1971-01-01")
+
+  bezirk <- long_data_districts %>%
+    filter(BezName == input$district) %>% 
+    filter(Jahr >= startyear & Jahr <= endyear)
+  
+  ggplot(bezirk, aes(x = Jahr, y = Staerke, color = Partei)) +
+    geom_line(size = 2) +
+    ylab("Party strength (%)") +
+    xlab("Year") +
+    theme_bw() +
+    ggtitle(bezirk$BezName) +
+    scale_color_manual(name = "Party", values = distinct_colors) +
+    guides(color = guide_legend(ncol = 2))
+})
+```
